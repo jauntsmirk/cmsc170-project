@@ -1,8 +1,5 @@
 # How we draw the random samples and even out the HS chapter counts
 
-Reply to the instructor's note: "I-detail niyo lang yung how you'll get the random samples
-and what steps you need to do to make the HS chapters count even."
-
 ## Why this is needed
 The raw files hold about 65 million rows and the HS chapters are very uneven: a few chapters
 (for example machinery, plastics, textiles) have millions of rows and some have only a few
