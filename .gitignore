@@ -6,3 +6,4 @@ data/*_syn/
 results_syn/
 __pycache__/
 *.pyc
+.venv/
