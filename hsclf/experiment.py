@@ -12,7 +12,7 @@ noisy-chapter runs. It follows the same protocol as run_experiments.py:
   3. refit vocabulary + model on train + val, then evaluate on both test sets
 
 With seed 170 and default settings, train and val are row-for-row the same as
-data/processed/train.csv and val.csv, so it reproduces the Milestone 2 results.
+data/processed/train.csv and val.csv (the Milestone 2 splits).
 """
 import os
 import random
@@ -33,9 +33,9 @@ CAP_TRAIN, CAP_EVAL = 1500, 200
 
 # Hyperparameter grids tuned on validation (same as Milestone 2)
 GRIDS = {
-    "naive_bayes": [0.01, 0.1, 0.5, 1.0],   # alpha
-    "perceptron": [5, 10],                  # epochs
-    "knn": [1, 5, 15],                      # k
+    "naive_bayes": [0.01, 0.1, 0.5, 1.0], # alpha (0.5 wins, inside the grid)
+    "perceptron": [2, 3, 5, 10], # epochs (Milestone 2 tried only 5 and 10)
+    "knn": [1, 5, 15, 30, 50], # k (Milestone 2 stopped at 15, which kept winning)
 }
 FEATURES = {"naive_bayes": "count", "perceptron": "tfidf", "knn": "tfidf"}
 KNN_VAL_LIMIT = 4000  # random validation rows used to tune k-NN (speed)
