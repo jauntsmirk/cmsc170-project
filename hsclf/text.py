@@ -15,6 +15,11 @@ import numpy as np
 BRACKET_RE = re.compile(r"\[[^\]]*\]")                    # shipment refs: [TR-H1692]
 QTY_RE = re.compile(r"\(\s*(qty|quantity)\b[^)]*\)", re.I)  # (QTY 2,000 PCS)
 TOKEN_RE = re.compile(r"[a-z]+")
+# numbers mode: a number glued to letters is one token, in either order
+#   "220v", "1.5hp", "6m" (number then unit)   "x200", "m6x20" (letters then number)   "cable" (letters only)
+# a number standing alone ("2000") matches none of the three, so it is still dropped
+NUM_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?[a-z]+|[a-z]+\d[a-z0-9]*|[a-z]+")
+DIGITS_RE = re.compile(r"\d+(?:\.\d+)?")  # every number inside a token becomes "#": "220v" -> "#v"
 
 STOPWORDS = frozenset("""a an and are as at be by for from in is it of on or the to with
 pcs pc ctn ctns pkg pkgs pack packed packing box boxes qty unit units set sets""".split())
@@ -26,8 +31,27 @@ def clean(text):
     return text.lower()
 
 
-def tokenize(text, min_len=2, stopwords=STOPWORDS):
-    return [t for t in TOKEN_RE.findall(clean(text)) if len(t) >= min_len and t not in stopwords]
+def tokenize(text, min_len=2, stopwords=STOPWORDS, numbers=False):
+    """
+    numbers=False (Milestone 2): letters only, so "220V MOTOR" -> ["motor"].
+    numbers=True: every letters-only token of the old mode, plus a number glued to a unit
+                  or name with its digits replaced by "#": "220V MOTOR 1.5HP" ->
+                  ["#v", "motor", "hp", "#hp"]. Replacing the digits keeps the unit
+                  (volts, horsepower) and drops the exact amount, so "110v" and "220v"
+                  count as the same word. Old tokens are kept ("usb2" -> "usb", "usb#"),
+                  so this mode only adds words, it never removes one.
+    """
+    if not numbers:
+        found = TOKEN_RE.findall(clean(text))
+    else:
+        found = []
+        for t in NUM_TOKEN_RE.findall(clean(text)):
+            if DIGITS_RE.search(t):
+                found += TOKEN_RE.findall(t)       # the letters, as the old mode would give them
+                found.append(DIGITS_RE.sub("#", t))  # plus the number token
+            else:
+                found.append(t)
+    return [t for t in found if len(t) >= min_len and t not in stopwords]
 
 
 def with_bigrams(tokens):
@@ -90,12 +114,13 @@ class Vectorizer:
     (ties broken alphabetically so the result is deterministic).
     """
 
-    def __init__(self, mode="tfidf", max_features=5000, min_df=3, bigrams=False):
+    def __init__(self, mode="tfidf", max_features=5000, min_df=3, bigrams=False, numbers=False):
         self.mode, self.max_features, self.min_df, self.bigrams = mode, max_features, min_df, bigrams
+        self.numbers = numbers  # see tokenize(): keep "220v"-style tokens
         self.vocab, self.idf = None, None
 
     def _tokens(self, text):
-        t = tokenize(text)
+        t = tokenize(text, numbers=self.numbers)
         return with_bigrams(t) if self.bigrams else t
 
     def fit(self, texts):

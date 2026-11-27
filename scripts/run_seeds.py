@@ -15,6 +15,11 @@ Usage:
     python3 scripts/run_seeds.py --phase sweep
     python3 scripts/run_seeds.py --phase seeds
     python3 scripts/run_seeds.py --phase seeds --methods nb,perceptron --seeds 170-172
+    python3 scripts/run_seeds.py --phase seeds --prior real          # real chapter priors
+    python3 scripts/run_seeds.py --phase sweep --numbers 1           # keep "220v"-style tokens
+
+An older results CSV without the "numbers" and "prior_strength" columns is upgraded
+in place the first time new rows are added (old rows get numbers=0).
 """
 import argparse
 import csv
@@ -26,9 +31,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from hsclf.experiment import log, run_one
 from hsclf.split import parse_years
 
-FIELDS = ["phase", "method", "seed", "max_features", "bigrams", "prior", "exclude_chapters",
-          "train_frac", "best_param", "test_set", "accuracy", "macro_f1", "weighted_f1", "top3",
-          "value_err", "ch01_predicted", "seconds"]
+FIELDS = ["phase", "method", "seed", "max_features", "bigrams", "numbers", "prior", "exclude_chapters",
+          "train_frac", "best_param", "prior_strength", "test_set", "accuracy", "macro_f1", "weighted_f1",
+          "top3", "value_err", "ch01_predicted", "seconds"]
 METHOD_NAMES = {"nb": "naive_bayes", "perceptron": "perceptron", "knn": "knn"}
 EXPECTED_TEST_SETS = {"sweep": {"val"}, "seeds": {"test_bal", "test_nat"}}
 
@@ -36,6 +41,7 @@ EXPECTED_TEST_SETS = {"sweep": {"val"}, "seeds": {"test_bal", "test_nat"}}
 def run_key(r):
     """Identifies one run: same key = same settings, so it does not need to run again."""
     return (r["phase"], r["method"], str(r["seed"]), str(r["max_features"]), str(int(r["bigrams"])),
+            str(int(r.get("numbers") or 0)),  # rows from before the numbers option count as 0
             r["prior"], r["exclude_chapters"], str(float(r["train_frac"])))
 
 
@@ -46,7 +52,25 @@ def read_rows(path):
         return list(csv.DictReader(fh))
 
 
+def upgrade_csv(path):
+    """Rewrites a CSV made before the "numbers" and "prior_strength" columns existed,
+    so new rows can be appended under one header. Old rows get numbers=0 (letters only)."""
+    with open(path, newline="") as fh:
+        header = next(csv.reader(fh), [])
+    if header == FIELDS:
+        return
+    old = read_rows(path)
+    for r in old:
+        r.setdefault("numbers", "0")
+    with open(path, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=FIELDS, restval="", extrasaction="ignore")
+        w.writeheader()
+        w.writerows(old)
+
+
 def append_rows(path, rows):
+    if os.path.exists(path):
+        upgrade_csv(path)
     new = not os.path.exists(path)
     with open(path, "a", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS)
@@ -63,9 +87,11 @@ def done_keys(rows):
     return {k for k, sets in seen.items() if sets >= EXPECTED_TEST_SETS[k[0]]}
 
 
-def best_features(rows, method):
-    """Best (max_features, bigrams) for a method by validation macro-F1 in the sweep rows."""
+def best_features(rows, method, numbers=0):
+    """Best (max_features, bigrams) for a method by validation macro-F1 in the sweep rows
+    made with the same numbers setting."""
     sweep = [r for r in rows if r["phase"] == "sweep" and r["method"] == method
+             and int(r.get("numbers") or 0) == numbers
              and r["prior"] == "balanced" and r["exclude_chapters"] == "" and float(r["train_frac"]) == 1.0]
     if not sweep:
         return None
@@ -80,6 +106,10 @@ def main():
     ap.add_argument("--seeds", default="170-174", help="seeds phase only, e.g. 170-174 or 170,171")
     ap.add_argument("--vocab", default="2000,5000,10000", help="sweep phase: vocabulary sizes to try")
     ap.add_argument("--bigrams", default="0,1", help="sweep phase: 0 = words only, 1 = words + bigrams")
+    ap.add_argument("--prior", choices=["balanced", "real"], default="balanced",
+                    help="seeds phase: real = real chapter priors, strength chosen on the 2022 natural sample")
+    ap.add_argument("--numbers", type=int, choices=[0, 1], default=0,
+                    help="1 = keep number+unit tokens such as 220v (text.tokenize)")
     ap.add_argument("--out", default="results/seeds.csv")
     a = ap.parse_args()
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
@@ -98,7 +128,11 @@ def main():
     else:
         settings = {}
         for m in methods:
-            best = best_features(rows, m)
+            best = best_features(rows, m, a.numbers)
+            if best is None and a.numbers:
+                best = best_features(rows, m, 0)
+                if best is not None:
+                    log(f"{m}: no sweep rows with numbers=1, using the best numbers=0 setting")
             if best is None:
                 settings[m] = (5000, 0)
                 log(f"{m}: no sweep rows found, using the Milestone 2 setting vocab=5000 bigrams=0")
@@ -112,13 +146,15 @@ def main():
     log(f"{len(plan)} runs planned, writing to {a.out}")
     t_all = time.time()
     for i, (m, s, v, b) in enumerate(plan, 1):
+        prior = a.prior if a.phase == "seeds" else "balanced"  # the sweep never uses the prior
         key = run_key({"phase": a.phase, "method": m, "seed": s, "max_features": v, "bigrams": b,
-                       "prior": "balanced", "exclude_chapters": "", "train_frac": 1.0})
+                       "numbers": a.numbers, "prior": prior, "exclude_chapters": "", "train_frac": 1.0})
         if key in done:
             log(f"run {i}/{len(plan)}: {m} seed={s} vocab={v} bigrams={b} already done, skipping")
             continue
         log(f"===== run {i}/{len(plan)}: {m} seed={s} vocab={v} bigrams={b} =====")
-        out = run_one(m, s, max_features=v, bigrams=bool(b), phase=a.phase)
+        out = run_one(m, s, max_features=v, bigrams=bool(b), phase=a.phase,
+                      prior=prior, numbers=bool(a.numbers))
         append_rows(a.out, out)  # saved immediately, so a crash loses at most this run
         for r in out:
             log(f"  saved: {r['test_set']} acc={r['accuracy']} macro-F1={r['macro_f1']} ({r['seconds']}s)")

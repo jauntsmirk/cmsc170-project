@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 METRICS = [("accuracy", "Accuracy"), ("macro_f1", "Macro-F1"), ("top3", "Top-3 acc."),
            ("value_err", "Value on wrong rows"), ("ch01_predicted", "Predicted as ch. 01")]
-CONFIG = ["method", "max_features", "bigrams", "prior", "exclude_chapters", "train_frac"]
+CONFIG = ["method", "max_features", "bigrams", "prior", "exclude_chapters", "train_frac", "numbers"]
+DEFAULTS = {"numbers": "0"}  # value for rows made before that column existed
 
 
 def mean_std(values):
@@ -45,10 +46,11 @@ def summarize(rows):
     groups = defaultdict(list)
     for r in rows:
         if r["phase"] == "seeds":
-            groups[tuple(r[c] for c in CONFIG) + (r["test_set"],)].append(r)
+            groups[tuple(r.get(c) or DEFAULTS.get(c, "") for c in CONFIG) + (r["test_set"],)].append(r)
     out = {}
     for key, rs in groups.items():
-        s = {"n": len(rs), "seeds": sorted(int(r["seed"]) for r in rs)}
+        s = {"n": len(rs), "seeds": sorted(int(r["seed"]) for r in rs),
+             "strengths": sorted({r.get("prior_strength") or "" for r in rs} - {""})}
         for m, _ in METRICS:
             s[m] = mean_std([float(r[m]) for r in rs])
         out[key] = s
@@ -74,30 +76,35 @@ def main():
         if not keys:
             continue
         lines += [f"## {title}", "",
-                  "| Method | Vocab | Bigrams | Prior | Excluded | Train frac | Seeds | "
+                  "| Method | Vocab | Bigrams | Numbers | Prior | Excluded | Train frac | Seeds | "
                   + " | ".join(t for _, t in METRICS) + " |",
-                  "|---|---|---|---|---|---|---|" + "---|" * len(METRICS)]
+                  "|---|---|---|---|---|---|---|---|" + "---|" * len(METRICS)]
         for k in keys:
             s = summary[k]
             cells = [fmt(m, *s[m]) for m, _ in METRICS]
-            lines.append(f"| {k[0]} | {k[1]} | {'yes' if k[2] == '1' else 'no'} | {k[3]} | {k[4] or '-'} | "
+            prior = k[3] + (f" (strength {', '.join(s['strengths'])})" if s["strengths"] else "")
+            lines.append(f"| {k[0]} | {k[1]} | {'yes' if k[2] == '1' else 'no'} | "
+                         f"{'yes' if k[6] == '1' else 'no'} | {prior} | {k[4] or '-'} | "
                          f"{k[5]} | {s['n']} | " + " | ".join(cells) + " |")
         lines.append("")
 
     sweep = [r for r in rows if r["phase"] == "sweep"]
     if sweep:
         methods = sorted({r["method"] for r in sweep})
-        cell = {(r["max_features"], r["bigrams"], r["method"]): r for r in sweep}
-        settings = sorted({(r["max_features"], r["bigrams"]) for r in sweep}, key=lambda t: (int(t[0]), t[1]))
+        num = lambda r: r.get("numbers") or "0"
+        cell = {(r["max_features"], r["bigrams"], num(r), r["method"]): r for r in sweep}
+        settings = sorted({(r["max_features"], r["bigrams"], num(r)) for r in sweep},
+                          key=lambda t: (t[2], int(t[0]), t[1]))
         lines += ["## Feature sweep (validation macro-F1, seed 170)", "",
-                  "| Vocab | Bigrams | " + " | ".join(methods) + " |",
-                  "|---|---|" + "---|" * len(methods)]
-        for v, b in settings:
+                  "| Vocab | Bigrams | Numbers | " + " | ".join(methods) + " |",
+                  "|---|---|---|" + "---|" * len(methods)]
+        for v, b, n in settings:
             vals = []
             for m in methods:
-                r = cell.get((v, b, m))
+                r = cell.get((v, b, n, m))
                 vals.append(f"{float(r['macro_f1']):.4f} (best {r['best_param']})" if r else "")
-            lines.append(f"| {v} | {'yes' if b == '1' else 'no'} | " + " | ".join(vals) + " |")
+            lines.append(f"| {v} | {'yes' if b == '1' else 'no'} | {'yes' if n == '1' else 'no'} | "
+                         + " | ".join(vals) + " |")
         lines.append("")
 
     with open(a.out, "w") as fh:

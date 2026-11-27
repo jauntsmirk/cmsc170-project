@@ -81,9 +81,9 @@ Full tables, including value on wrong rows and chapter-01 predictions: `results/
 Everything goes through
 `run_one(method, seed, max_features, bigrams, prior, exclude_chapters, train_frac, phase)` in `hsclf/experiment.py`.
 
-- **Priors (B):** add them to the models in `hsclf/models.py`, then handle `prior` in
-  `_make()` in `hsclf/experiment.py`, which raises NotImplementedError for anything except
-  `"balanced"` until then.
+- **Priors (B): done.** `run_seeds.py --phase seeds --prior real`. See "Real chapter priors" below.
+- **Number tokens: done.** `run_seeds.py --phase sweep --numbers 1`, then `--phase seeds --numbers 1`.
+  See "Number tokens" below.
 - **Learning curve (B):** pass `train_frac` (e.g. 0.1, 0.25, 0.5).
 - **Noisy chapters (C):** pass `exclude_chapters=("01",)`. It drops those chapters from every split.
 - **Count of rows predicted as chapter 01:** already in the `ch01_predicted` column.
@@ -92,3 +92,42 @@ Everything goes through
 script (or add a flag) and append to `results/seeds.csv` with `append_rows` so the summary picks it up.
 
 Tests: `tests/test_runner.py` (fake data, no download needed).
+## Real chapter priors (`--prior real`)
+
+Training is balanced, so every model treats all chapters as equally common. Real traffic is
+not balanced: a few chapters (84, 85, 39) are a large share of all rows. With `--prior real`,
+each model's scores are corrected by Bayes' rule after scoring (`adjust_for_prior` in
+`hsclf/models.py`):
+
+    P_real(chapter | words)  is proportional to  P_train(chapter | words) * real_share / train_share
+
+- **Real shares** come from the full-file chapter counts in `data/pool/sampling_log.json`,
+  using the training years only (2012-2021; 2012-2022 for the final refit). Never the test years.
+- **Strength** scales the correction: 0 = balanced model as before, 1 = full Bayes correction.
+  It is chosen from `PRIOR_GRID = [0, 0.25, 0.5, 1, 2, 4]` by accuracy on the 2022 rows of
+  `natural_sample.csv` (real chapter mix, not a test set). Ties keep the weaker strength.
+- **Per method:** Naive Bayes and the Perceptron add `strength * log(real/train)` to their scores
+  (for Naive Bayes, strength 1 is exactly swapping the balanced prior for the real one). k-NN
+  multiplies each chapter's votes by `(real/train) ** strength`.
+- **k-NN limit:** the prior can only reweight chapters already among the k neighbours
+  (0 votes times any weight is 0), so it helps less with small k.
+- **What to expect:** higher natural-test accuracy, and possibly lower macro-F1 and balanced-test
+  scores, because the prior favours common chapters. Report both priors side by side.
+- The chosen strength is saved in the `prior_strength` column and shown in the summary.
+
+## Number tokens (`--numbers 1`)
+
+The default tokenizer keeps letters only, so "220V MOTOR 1.5HP" becomes `motor hp`. With
+`--numbers 1`, a number glued to a unit or name is kept with its digits replaced by `#`:
+`#v motor hp #hp`. So "110V" and "220V" count as the same word, while a lone number such as
+"2000" is still dropped. Every old token is kept ("USB2" gives `usb` and `usb#`), so this
+option only adds words. Run the sweep with `--numbers 1` first so the seeds phase can pick the
+best vocabulary for it (if there is no such sweep, it falls back to the `--numbers 0` setting).
+
+## Results CSV columns
+
+`numbers` and `prior_strength` were added. An older `results/seeds.csv` is upgraded in place the
+first time new rows are appended (old rows get `numbers=0`); existing values are not changed.
+With the default settings (`--prior balanced --numbers 0`) results are identical to before.
+
+Tests: `tests/test_priors_numbers.py` (fake data, no download needed).

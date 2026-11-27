@@ -12,6 +12,44 @@ import numpy as np
 BATCH = 2048
 
 
+# ---------------------------------------------------------------------------
+# Real chapter priors
+#
+# Training is balanced (every chapter capped at the same count), so every model
+# learns as if all chapters were equally common. Real customs traffic is not:
+# a few chapters (84, 85, 39) are a large share of all rows. These two functions
+# correct for that after the model has scored a description, by Bayes' rule:
+#
+#     P_real(chapter | words)  is proportional to  P_train(chapter | words) * real_share / train_share
+#
+# `strength` scales the correction: 0 = no change (the balanced model as before),
+# 1 = the full Bayes correction. It is chosen on the 2022 natural sample, never on test.
+# ---------------------------------------------------------------------------
+
+def prior_log_ratio(real_counts, train_counts):
+    """log(real share / training share) per chapter. Both shares are add-one smoothed,
+    so a chapter with a count of 0 still gets a finite value."""
+    real = np.asarray(real_counts, dtype=np.float64) + 1.0
+    train = np.asarray(train_counts, dtype=np.float64) + 1.0
+    return np.log(real / real.sum()) - np.log(train / train.sum())
+
+
+def adjust_for_prior(scores, log_ratio, strength, votes=False):
+    """
+    Applies the prior correction to an (n, C) score array.
+      votes=False  Naive Bayes and Perceptron: scores are log-scale, so ADD
+                   strength * log_ratio (for Naive Bayes with strength 1 this swaps
+                   the balanced prior for the real one).
+      votes=True   k-NN: scores are summed votes, so MULTIPLY each chapter's votes
+                   by ratio ** strength (exp(strength * log_ratio)).
+    """
+    if strength == 0:
+        return scores
+    if votes:
+        return scores * np.exp(strength * log_ratio)
+    return scores + strength * log_ratio
+
+
 class MultinomialNB:
     def __init__(self, n_classes, alpha=1.0):
         self.C, self.alpha = n_classes, alpha
