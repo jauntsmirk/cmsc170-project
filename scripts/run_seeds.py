@@ -18,6 +18,15 @@ Usage:
     python3 scripts/run_seeds.py --phase seeds --prior real          # real chapter priors
     python3 scripts/run_seeds.py --phase sweep --numbers 1           # keep "220v"-style tokens
 
+Milestone 4 experiments (seeds phase only; the sweep never uses them):
+    python3 scripts/run_seeds.py --phase seeds --train-frac 0.25 --methods nb,perceptron --seeds 170-172
+    python3 scripts/run_seeds.py --phase seeds --exclude 01 --seeds 170-172
+    python3 scripts/run_seeds.py --phase seeds --methods knn --prior real --seeds 170
+
+--train-frac keeps that share of the training rows. --exclude drops the listed chapters
+from every split (train, validation and both test sets). The feature setting still comes
+from the full-data sweep.
+
 An older results CSV without the "numbers" and "prior_strength" columns is upgraded
 in place the first time new rows are added (old rows get numbers=0).
 """
@@ -99,6 +108,11 @@ def best_features(rows, method, numbers=0):
     return int(b["max_features"]), int(b["bigrams"]), float(b["macro_f1"])
 
 
+def parse_chapters(text):
+    """'01' or '01,05' or '1 5' -> ('01', '05'). Sorted, zero-padded to two digits."""
+    return tuple(sorted(c.strip().zfill(2) for c in text.replace(",", " ").split() if c.strip()))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--phase", choices=["sweep", "seeds"], required=True)
@@ -110,11 +124,21 @@ def main():
                     help="seeds phase: real = real chapter priors, strength chosen on the 2022 natural sample")
     ap.add_argument("--numbers", type=int, choices=[0, 1], default=0,
                     help="1 = keep number+unit tokens such as 220v (text.tokenize)")
+    ap.add_argument("--train-frac", type=float, default=1.0,
+                    help="seeds phase: share of the training rows to keep (learning curve), 0 < f <= 1")
+    ap.add_argument("--exclude", default="",
+                    help="seeds phase: chapters to drop from every split, e.g. 01 or 01,05")
     ap.add_argument("--out", default="results/seeds.csv")
     a = ap.parse_args()
+    if not 0 < a.train_frac <= 1:
+        ap.error("--train-frac must be in (0, 1]")
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 
     methods = [METHOD_NAMES[m] for m in a.methods.split(",")]
+    exclude = parse_chapters(a.exclude) if a.phase == "seeds" else ()  # the sweep never uses these
+    train_frac = a.train_frac if a.phase == "seeds" else 1.0
+    if a.phase == "sweep" and (a.exclude or a.train_frac != 1.0):
+        log("note: --exclude and --train-frac are ignored in the sweep phase")
     rows = read_rows(a.out)
     done = done_keys(rows)
 
@@ -143,18 +167,22 @@ def main():
             for m in methods:
                 plan.append((m, s, *settings[m]))
 
-    log(f"{len(plan)} runs planned, writing to {a.out}")
+    log(f"{len(plan)} runs planned, writing to {a.out}"
+        + (f" | train_frac={train_frac}" if train_frac != 1.0 else "")
+        + (f" | excluding chapters {' '.join(exclude)}" if exclude else ""))
     t_all = time.time()
     for i, (m, s, v, b) in enumerate(plan, 1):
         prior = a.prior if a.phase == "seeds" else "balanced"  # the sweep never uses the prior
         key = run_key({"phase": a.phase, "method": m, "seed": s, "max_features": v, "bigrams": b,
-                       "numbers": a.numbers, "prior": prior, "exclude_chapters": "", "train_frac": 1.0})
+                       "numbers": a.numbers, "prior": prior, "exclude_chapters": " ".join(exclude),
+                       "train_frac": train_frac})
         if key in done:
             log(f"run {i}/{len(plan)}: {m} seed={s} vocab={v} bigrams={b} already done, skipping")
             continue
         log(f"===== run {i}/{len(plan)}: {m} seed={s} vocab={v} bigrams={b} =====")
         out = run_one(m, s, max_features=v, bigrams=bool(b), phase=a.phase,
-                      prior=prior, numbers=bool(a.numbers))
+                      prior=prior, numbers=bool(a.numbers),
+                      exclude_chapters=exclude, train_frac=train_frac)
         append_rows(a.out, out)  # saved immediately, so a crash loses at most this run
         for r in out:
             log(f"  saved: {r['test_set']} acc={r['accuracy']} macro-F1={r['macro_f1']} ({r['seconds']}s)")
